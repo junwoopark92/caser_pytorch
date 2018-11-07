@@ -141,3 +141,129 @@ class Caser(nn.Module):
             res = (x * w2).sum(1) + b2
 
         return res
+
+class SelfAttnCaser(nn.Module):
+    """
+    Convolutional Sequence Embedding Recommendation Model (Caser)[1].
+
+    [1] Personalized Top-N Sequential Recommendation via Convolutional Sequence Embedding, Jiaxi Tang and Ke Wang , WSDM '18
+
+    Parameters
+    ----------
+
+    num_users: int,
+        Number of users.
+    num_items: int,
+        Number of items.
+    model_args: args,
+        Model-related arguments, like latent dimensions.
+    """
+
+    def __init__(self, num_users, num_items, model_args):
+        super(SelfAttnCaser, self).__init__()
+        self.args = model_args
+
+        # init args
+        L = self.args.L
+        dims = self.args.d
+        self.items_dim = L*dims
+        self.drop_ratio = self.args.drop
+        self.ac_fc = activation_getter[self.args.ac_fc]
+
+        # user and item embeddings
+        self.user_embeddings = nn.Embedding(num_users, dims)
+        self.item_embeddings = nn.Embedding(num_items, dims)
+        self.pos_embeddings = nn.Embedding(L, dims)
+
+        # fully-connected layer
+        # W1, b1 can be encoded with nn.Linear
+        self.fc1 = nn.Linear(self.items_dim, dims)
+        # W2, b2 are encoded with nn.Embedding, as we don't need to compute scores for all items
+        self.W2 = nn.Embedding(num_items, dims+dims)
+        self.b2 = nn.Embedding(num_items, 1)
+
+        # dropout
+        self.dropout = nn.Dropout(self.drop_ratio)
+
+        # weight initialization
+        self.user_embeddings.weight.data.normal_(0, 1.0 / self.user_embeddings.embedding_dim)
+        self.item_embeddings.weight.data.normal_(0, 1.0 / self.item_embeddings.embedding_dim)
+        self.W2.weight.data.normal_(0, 1.0 / self.W2.embedding_dim)
+        self.b2.weight.data.zero_()
+
+        self.cache_x = None
+
+    def attn_layer(self, q):
+        q_T = q.transpose(1, 2)
+        qq_T = torch.bmm(q, q_T)
+        attn_map = torch.sum(qq_T, dim=1).unsqueeze(2)
+        q_prime = q * attn_map
+        return q_prime
+
+    def forward(self, seq_var, user_var, item_var, pos_var, use_cache=False, for_pred=False):
+        """
+        The forward propagation used to get recommendation scores, given
+        triplet (user, sequence, targets). Note that we can cache 'x' to
+        save computation for negative predictions. Because when computing
+        negatives, the (user, sequence) are the same, thus 'x' will be the
+        same as well.
+
+        Parameters
+        ----------
+
+        seq_var: torch.autograd.Variable
+            a batch of sequence
+        user_var: torch.autograd.Variable
+            a batch of user
+        item_var: torch.autograd.Variable
+            a batch of items
+        use_cache: boolean, optional
+            Use cache of x. Set to True when computing negatives.
+        for_pred: boolean, optional
+            Train or Prediction. Set to True when evaluation.
+        """
+
+        if not use_cache:
+            # Embedding Look-up
+            item_embs = self.item_embeddings(seq_var)  # use unsqueeze() to get 4-D
+            user_emb = self.user_embeddings(user_var).squeeze(1)
+            pos_emb = self.pos_embeddings(pos_var)
+
+            q = item_embs
+
+            attn_repeat = 2
+            for i in range(attn_repeat):
+                q = self.attn_layer(q)
+
+            item_seq_vec = q + pos_emb
+
+            # Fully-connected Layers
+            out = item_seq_vec.view(-1, self.items_dim)
+            # apply dropout
+            out = self.dropout(out)
+
+            # fully-connected layer
+            z = self.ac_fc(self.fc1(out))
+            x = torch.cat([z, user_emb], 1)
+
+            self.cache_x = x
+
+        else:
+            x = self.cache_x
+
+        w2 = self.W2(item_var)
+        b2 = self.b2(item_var)
+        if not for_pred:
+            results = []
+            for i in range(item_var.size(1)):
+                w2i = w2[:, i, :]
+                b2i = b2[:, i, 0]
+                result = (x * w2i).sum(1) + b2i
+                results.append(result)
+            res = torch.stack(results, 1)
+        else:
+            w2 = w2.squeeze()
+            b2 = b2.squeeze()
+            res = (x * w2).sum(1) + b2
+
+        return res
