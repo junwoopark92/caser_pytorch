@@ -292,7 +292,7 @@ if __name__ == '__main__':
     parser.add_argument('--learning_rate', type=float, default=1e-3)
     parser.add_argument('--l2', type=float, default=1e-6)
     parser.add_argument('--neg_samples', type=int, default=3)
-    parser.add_argument('--use_cuda', type=str2bool, default=True)
+    parser.add_argument('--use_cuda', type=str2bool, default=False)
 
     config = parser.parse_args()
 
