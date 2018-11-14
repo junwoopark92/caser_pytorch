@@ -7,8 +7,10 @@ import numpy as np
 
 import scipy.sparse as sp
 
+import torch
+from torch.utils import data
 
-class Interactions(object):
+class Interactions(data.dataset):
     """
     Interactions object. Contains (at a minimum) pair of user-item
     interactions. This is designed only for implicit feedback scenarios.
@@ -70,9 +72,18 @@ class Interactions(object):
         self.sequences = None
         self.test_sequences = None
 
+        if not istrain:
+            self.to_sequence(5, 2)
+
     def __len__(self):
 
         return len(self.user_ids)
+
+    def __getitem__(self, index):
+        x_seq = self.sequences.sequence[index]
+        x_user = self.sequences.user_ids.reshape(-1, 1)[index]
+        y_seq = self.sequences.target[index]
+        return x_seq, x_user, y_seq
 
     def tocoo(self):
         """
@@ -176,6 +187,8 @@ class Interactions(object):
 
         self.sequences = SequenceInteractions(sequence_users, sequences, sequences_targets)
         self.test_sequences = SequenceInteractions(test_users, test_sequences)
+
+
 
 
 class SequenceInteractions(object):
