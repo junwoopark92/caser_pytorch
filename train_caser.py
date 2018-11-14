@@ -139,26 +139,19 @@ class Recommender(object):
             item_negative_tensor = gpu(torch.from_numpy(negative_samples),
                                        self._use_cuda)
 
-            pos_seq_tensor = gpu(torch.from_numpy(np.array([0, 1, 2, 3, 4] * n_train).
-                                                      reshape(n_train, L)),
-                                     self._use_cuda)
-
             epoch_loss = 0.0
 
             for minibatch_num, \
                 (batch_sequence,
                  batch_user,
                  batch_target,
-                 batch_negative,
-                 batch_pos_sequence) in enumerate(minibatch(sequences_tensor,
+                 batch_negative) in enumerate(minibatch(sequences_tensor,
                                                         user_tensor,
                                                         item_target_tensor,
                                                         item_negative_tensor,
-                                                        pos_seq_tensor,
                                                         batch_size=self._batch_size)):
 
 
-                pos_var = Variable(batch_pos_sequence)
                 sequence_var = Variable(batch_sequence)
                 user_var = Variable(batch_user)
                 item_target_var = Variable(batch_target)
@@ -166,12 +159,10 @@ class Recommender(object):
 
                 target_prediction = self._net(sequence_var,
                                               user_var,
-                                              item_target_var,
-                                              pos_var)
+                                              item_target_var)
                 negative_prediction = self._net(sequence_var,
                                                 user_var,
                                                 item_negative_var,
-                                                pos_var,
                                                 use_cache=True)
 
                 self._optimizer.zero_grad()
@@ -188,7 +179,7 @@ class Recommender(object):
             epoch_loss /= minibatch_num + 1
 
             t2 = time()
-            if verbose and (epoch_num + 1) % 1 == 0:
+            if verbose and (epoch_num + 1) % 10 == 0:
                 precision, recall, mean_aps = evaluate_ranking(self, test, train, k=[1, 5, 10])
                 output_str = "Epoch %d [%.1f s]\tloss=%.4f, map=%.4f, " \
                              "prec@1=%.4f, prec@5=%.4f, prec@10=%.4f, " \
@@ -286,7 +277,6 @@ class Recommender(object):
         out = self._net(sequence_var,
                         user_var,
                         item_var,
-                        pos_var,
                         for_pred=True)
 
         return cpu(out.data).numpy().flatten()
@@ -306,7 +296,7 @@ if __name__ == '__main__':
     parser.add_argument('--learning_rate', type=float, default=1e-3)
     parser.add_argument('--l2', type=float, default=1e-6)
     parser.add_argument('--neg_samples', type=int, default=3)
-    parser.add_argument('--use_cuda', type=str2bool, default=False)
+    parser.add_argument('--use_cuda', type=str2bool, default=True)
 
     config = parser.parse_args()
 

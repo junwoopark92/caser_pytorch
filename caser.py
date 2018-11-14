@@ -173,7 +173,6 @@ class SelfAttnCaser(nn.Module):
         # user and item embeddings
         self.user_embeddings = nn.Embedding(num_users, dims)
         self.item_embeddings = nn.Embedding(num_items, dims)
-        self.pos_embeddings = nn.Embedding(L, dims)
 
         # fully-connected layer
         # W1, b1 can be encoded with nn.Linear
@@ -199,7 +198,7 @@ class SelfAttnCaser(nn.Module):
         attn_map = torch.sum(qq_T, dim=1).unsqueeze(2)
         return F.softmax(attn_map, dim=1)
 
-    def forward(self, seq_var, user_var, item_var, pos_var, use_cache=False, for_pred=False):
+    def forward(self, seq_var, user_var, item_var, use_cache=False, for_pred=False):
         """
         The forward propagation used to get recommendation scores, given
         triplet (user, sequence, targets). Note that we can cache 'x' to
@@ -226,7 +225,6 @@ class SelfAttnCaser(nn.Module):
             # Embedding Look-up
             item_embs = self.item_embeddings(seq_var)  # use unsqueeze() to get 4-D
             user_emb = self.user_embeddings(user_var).squeeze(1)
-            pos_emb = self.pos_embeddings(pos_var)
 
             q = item_embs
 
