@@ -197,8 +197,7 @@ class SelfAttnCaser(nn.Module):
         q_T = q.transpose(1, 2)
         qq_T = torch.bmm(q, q_T)
         attn_map = torch.sum(qq_T, dim=1).unsqueeze(2)
-        q_prime = q * attn_map
-        return q_prime
+        return F.softmax(attn_map, dim=1)
 
     def forward(self, seq_var, user_var, item_var, pos_var, use_cache=False, for_pred=False):
         """
@@ -233,9 +232,10 @@ class SelfAttnCaser(nn.Module):
 
             attn_repeat = 2
             for i in range(attn_repeat):
-                q = self.attn_layer(q)
+                attn_map = self.attn_layer(q)
+                q = item_embs * attn_map
 
-            item_seq_vec = q + pos_emb
+            item_seq_vec = q
 
             # Fully-connected Layers
             out = item_seq_vec.view(-1, self.items_dim)
