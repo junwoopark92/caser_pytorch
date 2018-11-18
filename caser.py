@@ -1,7 +1,7 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-
+import numpy as np
 from utils import activation_getter
 
 
@@ -174,6 +174,9 @@ class SelfAttnCaser(nn.Module):
         self.user_embeddings = nn.Embedding(num_users, dims)
         self.item_embeddings = nn.Embedding(num_items, dims)
 
+        self.dropout = nn.Dropout(0.5)
+        self.temperature = np.power(L, 0.5)
+
         # fully-connected layer
         # W1, b1 can be encoded with nn.Linear
         self.fc1 = nn.Linear(self.items_dim, dims)
@@ -197,6 +200,15 @@ class SelfAttnCaser(nn.Module):
         qq_T = torch.bmm(q, q_T)
         attn_map = torch.sum(qq_T, dim=1).unsqueeze(2)
         return F.softmax(attn_map, dim=1)
+
+    def scaledot_attn_layer(self, q):
+        q_T = q.transpose(1, 2)
+        qq_T = torch.bmm(q, q_T)
+        attn_map = torch.sum(qq_T, dim=1).unsqueeze(2)
+        attn_map = attn_map / self.temperature
+        attn_map = F.softmax(attn_map, dim=1)
+        attn_map = self.dropout(attn_map)
+        return attn_map
 
     def forward(self, seq_var, user_var, item_var, use_cache=False, for_pred=False):
         """
@@ -230,7 +242,8 @@ class SelfAttnCaser(nn.Module):
 
             attn_repeat = 2
             for i in range(attn_repeat):
-                attn_map = self.attn_layer(q)
+                #attn_map = self.attn_layer(q)
+                attn_map = self.scaledot_attn_layer(q)
                 q = item_embs * attn_map
 
             item_seq_vec = q
