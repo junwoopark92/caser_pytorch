@@ -142,6 +142,28 @@ class Caser(nn.Module):
 
         return res
 
+
+def get_sinusoid_encoding_table(n_position, d_hid, padding_idx=None):
+    ''' Sinusoid position encoding table '''
+
+    def cal_angle(position, hid_idx):
+        return position / np.power(10000, 2 * (hid_idx // 2) / d_hid)
+
+    def get_posi_angle_vec(position):
+        return [cal_angle(position, hid_j) for hid_j in range(d_hid)]
+
+    sinusoid_table = np.array([get_posi_angle_vec(pos_i) for pos_i in range(n_position)])
+
+    sinusoid_table[:, 0::2] = np.sin(sinusoid_table[:, 0::2])  # dim 2i
+    sinusoid_table[:, 1::2] = np.cos(sinusoid_table[:, 1::2])  # dim 2i+1
+
+    if padding_idx is not None:
+        # zero vector for padding dimension
+        sinusoid_table[padding_idx] = 0.
+
+    return torch.FloatTensor(sinusoid_table)
+
+
 class SelfAttnCaser(nn.Module):
     """
     Convolutional Sequence Embedding Recommendation Model (Caser)[1].
@@ -174,7 +196,6 @@ class SelfAttnCaser(nn.Module):
         self.user_embeddings = nn.Embedding(num_users, dims)
         self.item_embeddings = nn.Embedding(num_items, dims)
 
-        self.dropout = nn.Dropout(0.5)
         self.temperature = np.power(L, 0.5)
 
         # fully-connected layer
@@ -195,6 +216,12 @@ class SelfAttnCaser(nn.Module):
 
         self.cache_x = None
 
+        n_position = L
+
+        self.position_enc = nn.Embedding.from_pretrained(
+            get_sinusoid_encoding_table(n_position, dims, None),
+            freeze=True)
+
     def attn_layer(self, q):
         q_T = q.transpose(1, 2)
         qq_T = torch.bmm(q, q_T)
@@ -210,7 +237,7 @@ class SelfAttnCaser(nn.Module):
         attn_map = self.dropout(attn_map)
         return attn_map
 
-    def forward(self, seq_var, user_var, item_var, use_cache=False, for_pred=False):
+    def forward(self, seq_var, seq_pos, user_var, item_var, use_cache=False, for_pred=False):
         """
         The forward propagation used to get recommendation scores, given
         triplet (user, sequence, targets). Note that we can cache 'x' to
@@ -238,7 +265,7 @@ class SelfAttnCaser(nn.Module):
             item_embs = self.item_embeddings(seq_var)  # use unsqueeze() to get 4-D
             user_emb = self.user_embeddings(user_var).squeeze(1)
 
-            q = item_embs
+            q = item_embs + self.position_enc(seq_pos)
 
             attn_repeat = 2
             for i in range(attn_repeat):

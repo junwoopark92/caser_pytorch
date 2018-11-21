@@ -104,8 +104,8 @@ class Recommender(object):
         sequences = train.sequences.sequences
         targets = train.sequences.targets
         users = train.sequences.user_ids.reshape(-1, 1)
-
         L, T = train.sequences.L, train.sequences.T
+        sequences_pos = np.array([i for i in range(L)]*sequences.shape[0]).reshape(sequences.shape)
 
         n_train = sequences.shape[0]
 
@@ -124,13 +124,16 @@ class Recommender(object):
             # set model to training model
             self._net.train()
 
-            users, sequences, targets = shuffle(users,
+            users, sequences, sequences_pos, targets = shuffle(users,
                                                 sequences,
+                                                sequences_pos,
                                                 targets)
 
             negative_samples = self._generate_negative_samples(users, train, n=self._neg_samples * T)
 
             sequences_tensor = gpu(torch.from_numpy(sequences),
+                                   self._use_cuda)
+            sequences_pos_tensor = gpu(torch.from_numpy(sequences_pos),
                                    self._use_cuda)
             user_tensor = gpu(torch.from_numpy(users),
                               self._use_cuda)
@@ -143,24 +146,28 @@ class Recommender(object):
 
             for minibatch_num, \
                 (batch_sequence,
+                 batch_sequence_pos,
                  batch_user,
                  batch_target,
                  batch_negative) in enumerate(minibatch(sequences_tensor,
+                                                        sequences_pos_tensor,
                                                         user_tensor,
                                                         item_target_tensor,
                                                         item_negative_tensor,
                                                         batch_size=self._batch_size)):
 
-
                 sequence_var = Variable(batch_sequence)
+                sequences_pos_var = Variable(batch_sequence_pos)
                 user_var = Variable(batch_user)
                 item_target_var = Variable(batch_target)
                 item_negative_var = Variable(batch_negative)
 
                 target_prediction = self._net(sequence_var,
+                                              sequences_pos_var,
                                               user_var,
                                               item_target_var)
                 negative_prediction = self._net(sequence_var,
+                                                sequences_pos_var,
                                                 user_var,
                                                 item_negative_var,
                                                 use_cache=True)
@@ -179,7 +186,7 @@ class Recommender(object):
             epoch_loss /= minibatch_num + 1
 
             t2 = time()
-            if verbose and (epoch_num + 1) % 10 == 0:
+            if verbose and (epoch_num + 1) % 1 == 0:
                 precision, recall, mean_aps = evaluate_ranking(self, test, train, k=[1, 5, 10])
                 output_str = "Epoch %d [%.1f s]\tloss=%.4f, map=%.4f, " \
                              "prec@1=%.4f, prec@5=%.4f, prec@10=%.4f, " \
@@ -264,10 +271,11 @@ class Recommender(object):
         if item_ids is None:
             item_ids = np.arange(self._num_items).reshape(-1, 1)
 
+        L = self.test_sequence.L
         sequences = torch.from_numpy(sequence.astype(np.int64).reshape(1, -1))
         item_ids = torch.from_numpy(item_ids.astype(np.int64))
         user_id = torch.from_numpy(np.array([[user_id]]).astype(np.int64))
-        pos_seq = torch.from_numpy(np.array([[0, 1, 2, 3, 4]]).astype(np.int64))
+        pos_seq = torch.from_numpy(np.array([[i for i in range(L)]]).astype(np.int64))
 
         sequence_var = Variable(gpu(sequences, self._use_cuda))
         item_var = Variable(gpu(item_ids, self._use_cuda))
@@ -275,6 +283,7 @@ class Recommender(object):
         pos_var = Variable(gpu(pos_seq, self._use_cuda))
 
         out = self._net(sequence_var,
+                        pos_var,
                         user_var,
                         item_var,
                         for_pred=True)
@@ -296,7 +305,7 @@ if __name__ == '__main__':
     parser.add_argument('--learning_rate', type=float, default=1e-3)
     parser.add_argument('--l2', type=float, default=1e-6)
     parser.add_argument('--neg_samples', type=int, default=3)
-    parser.add_argument('--use_cuda', type=str2bool, default=True)
+    parser.add_argument('--use_cuda', type=str2bool, default=False)
 
     config = parser.parse_args()
 
