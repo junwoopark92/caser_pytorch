@@ -7,6 +7,8 @@ from torch.autograd import Variable
 from caser import Caser, SelfAttnCaser
 from evaluation import evaluate_ranking
 from interactions import Interactions
+from sklearn.decomposition import LatentDirichletAllocation
+from scipy.sparse import dok_matrix
 from utils import *
 
 
@@ -102,6 +104,7 @@ class Recommender(object):
 
         # convert to sequences, targets and users
         sequences = train.sequences.sequences
+        probs = train.sequences.probs
         targets = train.sequences.targets
         users = train.sequences.user_ids.reshape(-1, 1)
         L, T = train.sequences.L, train.sequences.T
@@ -124,10 +127,11 @@ class Recommender(object):
             # set model to training model
             self._net.train()
 
-            users, sequences, sequences_pos, targets = shuffle(users,
+            users, sequences, sequences_pos, targets, probs = shuffle(users,
                                                 sequences,
                                                 sequences_pos,
-                                                targets)
+                                                targets,
+                                                probs)
 
             negative_samples = self._generate_negative_samples(users, train, n=self._neg_samples * T)
 
@@ -135,7 +139,8 @@ class Recommender(object):
                                    self._use_cuda)
             sequences_pos_tensor =gpu(torch.LongTensor(sequences_pos),
                                       self._use_cuda)
-
+            probs_tensor = gpu(torch.from_numpy(probs),
+                               self._use_cuda)
             user_tensor = gpu(torch.from_numpy(users),
                               self._use_cuda)
             item_target_tensor = gpu(torch.from_numpy(targets),
@@ -147,10 +152,12 @@ class Recommender(object):
 
             for minibatch_num, \
                 (batch_sequence,
+                 batch_probs,
                  batch_sequence_pos,
                  batch_user,
                  batch_target,
                  batch_negative) in enumerate(minibatch(sequences_tensor,
+                                                        probs_tensor,
                                                         sequences_pos_tensor,
                                                         user_tensor,
                                                         item_target_tensor,
@@ -158,6 +165,7 @@ class Recommender(object):
                                                         batch_size=self._batch_size)):
 
                 sequence_var = Variable(batch_sequence)
+                probs_var = Variable(batch_probs)
                 sequences_pos_var = Variable(batch_sequence_pos)
                 user_var = Variable(batch_user)
                 item_target_var = Variable(batch_target)
@@ -166,11 +174,13 @@ class Recommender(object):
                 target_prediction = self._net(sequence_var,
                                               sequences_pos_var,
                                               user_var,
-                                              item_target_var)
+                                              item_target_var,
+                                              probs_var)
                 negative_prediction = self._net(sequence_var,
                                                 sequences_pos_var,
                                                 user_var,
                                                 item_negative_var,
+                                                probs_var,
                                                 use_cache=True)
 
                 self._optimizer.zero_grad()
@@ -274,11 +284,13 @@ class Recommender(object):
 
         L = self.test_sequence.L
         sequences = torch.from_numpy(sequence.astype(np.int64).reshape(1, -1))
+        probs = torch.from_numpy(self.test_sequence.probs[user_id, :])
         item_ids = torch.from_numpy(item_ids.astype(np.int64))
         user_id = torch.from_numpy(np.array([[user_id]]).astype(np.int64))
         pos_seq = torch.from_numpy(np.array([[i for i in range(L)]]).astype(np.int64))
 
         sequence_var = Variable(gpu(sequences, self._use_cuda))
+        probs_var = Variable(gpu(probs, self._use_cuda))
         item_var = Variable(gpu(item_ids, self._use_cuda))
         user_var = Variable(gpu(user_id, self._use_cuda))
         pos_var = Variable(gpu(pos_seq, self._use_cuda))
@@ -287,6 +299,7 @@ class Recommender(object):
                         pos_var,
                         user_var,
                         item_var,
+                        probs_var,
                         for_pred=True)
 
         return cpu(out.data).numpy().flatten()
@@ -335,6 +348,45 @@ if __name__ == '__main__':
                         user_map=train.user_map,
                         item_map=train.item_map,
                         istrain=False)
+
+    matrix = dok_matrix((train.num_users, train.num_items))
+    with open(config.train_root) as f:
+        for line in f:
+            line = line[:-1]
+            if line == '':
+                break
+            user, item, _ = line.split()
+            matrix[train.user_map[user], train.item_map[item] - 1] += 1
+
+    print('matrix fill done')
+
+    topic_num = 30
+    lda = LatentDirichletAllocation(n_components=topic_num, learning_method='batch', n_jobs=4)
+    lda.fit(matrix)
+
+    print('lda done')
+
+    seq_num, seq_len = train.sequences.sequences.shape
+    matrix = np.zeros((seq_num, seq_len, train.num_items), dtype=np.float32)
+    i = np.arange(seq_num).reshape(-1, 1).repeat(seq_len, axis=1).reshape(-1)
+    j = torch.arange(seq_len).repeat(seq_num).int()
+    k = train.sequences.sequences.reshape(-1) - 1
+
+    matrix[i, j, k] += 1
+    matrix = matrix.sum(axis=1)
+    probs = lda.transform(matrix)
+    train.sequences.probs = probs.astype(np.float32)
+
+    seq_num, seq_len = train.test_sequences.sequences.shape
+    matrix = np.zeros((seq_num, seq_len, train.num_items), dtype=np.float32)
+    i = np.arange(seq_num).reshape(-1, 1).repeat(seq_len, axis=1).reshape(-1)
+    j = torch.arange(seq_len).repeat(seq_num).int()
+    k = train.test_sequences.sequences.reshape(-1) - 1
+
+    matrix[i, j, k] += 1
+    matrix = matrix.sum(axis=1)
+    probs = lda.transform(matrix)
+    train.test_sequences.probs = probs.astype(np.float32)
 
     print(config)
     print(model_config)

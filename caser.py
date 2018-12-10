@@ -246,12 +246,9 @@ class MultiHeadAttention(nn.Module):
 class SelfAttnCaser(nn.Module):
     """
     Convolutional Sequence Embedding Recommendation Model (Caser)[1].
-
     [1] Personalized Top-N Sequential Recommendation via Convolutional Sequence Embedding, Jiaxi Tang and Ke Wang , WSDM '18
-
     Parameters
     ----------
-
     num_users: int,
         Number of users.
     num_items: int,
@@ -260,28 +257,30 @@ class SelfAttnCaser(nn.Module):
         Model-related arguments, like latent dimensions.
     """
 
-    def __init__(self, num_users, num_items, model_args):
+    def __init__(self, num_users, num_items, model_args, topic_num):
         super(SelfAttnCaser, self).__init__()
         self.args = model_args
 
         # init args
         L = self.args.L
         dims = self.args.d
-        self.items_dim = L*dims
+        self.dims = dims
+        self.L = L
         self.drop_ratio = self.args.drop
         self.ac_fc = activation_getter[self.args.ac_fc]
 
         # user and item embeddings
         self.user_embeddings = nn.Embedding(num_users, dims)
         self.item_embeddings = nn.Embedding(num_items, dims)
+        self.category_embeddings = nn.Embedding(topic_num, dims)
 
-        self.multihead_attn = MultiHeadAttention(8, 50, 5, 5, dropout=0.5)
+        self.multihead_attn = MultiHeadAttention(5, 50, 50, 50, dropout=0.5)
 
         # fully-connected layer
         # W1, b1 can be encoded with nn.Linear
-        self.fc1 = nn.Linear(self.items_dim, dims)
+        self.fc1 = nn.Linear(dims + dims, dims)
         # W2, b2 are encoded with nn.Embedding, as we don't need to compute scores for all items
-        self.W2 = nn.Embedding(num_items, dims+dims)
+        self.W2 = nn.Embedding(num_items, dims + dims)
         self.b2 = nn.Embedding(num_items, 1)
 
         # dropout
@@ -290,6 +289,7 @@ class SelfAttnCaser(nn.Module):
         # weight initialization
         self.user_embeddings.weight.data.normal_(0, 1.0 / self.user_embeddings.embedding_dim)
         self.item_embeddings.weight.data.normal_(0, 1.0 / self.item_embeddings.embedding_dim)
+        self.category_embeddings.weight.data.normal_(0, 1.0 / self.item_embeddings.embedding_dim)
         self.W2.weight.data.normal_(0, 1.0 / self.W2.embedding_dim)
         self.b2.weight.data.zero_()
 
@@ -316,17 +316,15 @@ class SelfAttnCaser(nn.Module):
         attn_map = self.dropout(attn_map)
         return attn_map
 
-    def forward(self, seq_var, seq_pos, user_var, item_var, use_cache=False, for_pred=False):
+    def forward(self, seq_var, user_var, item_var, probs, use_cache=False, for_pred=False):
         """
         The forward propagation used to get recommendation scores, given
         triplet (user, sequence, targets). Note that we can cache 'x' to
         save computation for negative predictions. Because when computing
         negatives, the (user, sequence) are the same, thus 'x' will be the
         same as well.
-
         Parameters
         ----------
-
         seq_var: torch.autograd.Variable
             a batch of sequence
         user_var: torch.autograd.Variable
@@ -341,23 +339,30 @@ class SelfAttnCaser(nn.Module):
 
         if not use_cache:
             # Embedding Look-up
-            item_embs = self.item_embeddings(seq_var)  # use unsqueeze() to get 4-D
+            item_embs = self.item_embeddings(seq_var)
             user_emb = self.user_embeddings(user_var).squeeze(1)
 
-            q = item_embs + self.position_enc(seq_pos)
+            q = item_embs + self.position_enc.weight
 
             attn_repeat = 2
             for i in range(attn_repeat):
-                #attn_map = self.attn_layer(q)
-                #attn_map = self.scaledot_attn_layer(q)
+                # attn_map = self.attn_layer(q)
+                # attn_map = self.scaledot_attn_layer(q)
                 q, attn_map = self.multihead_attn(q, q, q)
 
-                #q = item_embs * attn_map
+                # q = item_embs * attn_map
 
-            item_seq_vec = q
+            # print(q.shape)
+            item_seq_vec = q.sum(dim=1)
+            # print(item_seq_vec.shape)
+            # categorical vector
+            category_embeddings = self.category_embeddings.weight
+            categorical_vector = probs @ category_embeddings
+            if categorical_vector.dim() == 1:
+                categorical_vector = categorical_vector.reshape(1, self.dims)
 
-            # Fully-connected Layers
-            out = item_seq_vec.view(-1, self.items_dim)
+            out = torch.cat([item_seq_vec, categorical_vector], dim=1)
+
             # apply dropout
             out = self.dropout(out)
 
