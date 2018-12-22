@@ -2,14 +2,17 @@ import argparse
 from time import time
 
 import torch.optim as optim
+from torch.optim.lr_scheduler import StepLR
+import torch.nn as nn
 from torch.autograd import Variable
 
-from caser import Caser, SelfAttnCaser
+from caser import SelfAttnCaser
 from evaluation import evaluate_ranking
 from interactions import Interactions
 from sklearn.decomposition import LatentDirichletAllocation
 from scipy.sparse import dok_matrix
 from utils import *
+import sys
 
 
 class Recommender(object):
@@ -19,11 +22,8 @@ class Recommender(object):
     (users, sequences, targets, negatives) and negatives are from negative
     sampling: for any known tuple of (user, sequence, targets), one or more
     items are randomly sampled to act as negatives.
-
-
     Parameters
     ----------
-
     n_iter: int,
         Number of iterations to run.
     batch_size: int,
@@ -48,14 +48,15 @@ class Recommender(object):
                  neg_samples=None,
                  learning_rate=None,
                  use_cuda=False,
-                 model_args=None):
+                 model_args=None,
+                 topic_num=None):
 
         # model related
         self._num_items = None
         self._num_users = None
         self._net = None
         self.model_args = model_args
-
+        self.topic_num = topic_num
         # learning related
         self._batch_size = batch_size
         self._n_iter = n_iter
@@ -79,21 +80,21 @@ class Recommender(object):
         self.test_sequence = interactions.test_sequences
 
         self._net = gpu(SelfAttnCaser(self._num_users,
-                              self._num_items,
-                              self.model_args), self._use_cuda)
+                                      self._num_items,
+                                      self.model_args,
+                                      topic_num=self.topic_num), self._use_cuda)
 
         self._optimizer = optim.Adam(
             self._net.parameters(),
             weight_decay=self._l2,
             lr=self._learning_rate)
+        self.scheduler = StepLR(self._optimizer, step_size=10, gamma=0.5)
 
     def fit(self, train, test, verbose=False):
         """
         The general training loop to fit the model
-
         Parameters
         ----------
-
         train: :class:`spotlight.interactions.Interactions`
             training instances, also contains test sequences
         test: :class:`spotlight.interactions.Interactions`
@@ -107,8 +108,8 @@ class Recommender(object):
         probs = train.sequences.probs
         targets = train.sequences.targets
         users = train.sequences.user_ids.reshape(-1, 1)
+
         L, T = train.sequences.L, train.sequences.T
-        sequences_pos = np.array([i for i in range(L)]*sequences.shape[0]).reshape(sequences.shape)
 
         n_train = sequences.shape[0]
 
@@ -118,27 +119,26 @@ class Recommender(object):
         if not self._initialized:
             self._initialize(train)
 
+        print(self._net)
+
         start_epoch = 0
 
         for epoch_num in range(start_epoch, self._n_iter):
-
+            self.scheduler.step()
             t1 = time()
 
             # set model to training model
             self._net.train()
 
-            users, sequences, sequences_pos, targets, probs = shuffle(users,
-                                                sequences,
-                                                sequences_pos,
-                                                targets,
-                                                probs)
+            users, sequences, targets, probs = shuffle(users,
+                                                       sequences,
+                                                       targets,
+                                                       probs)
 
             negative_samples = self._generate_negative_samples(users, train, n=self._neg_samples * T)
 
             sequences_tensor = gpu(torch.from_numpy(sequences),
                                    self._use_cuda)
-            sequences_pos_tensor =gpu(torch.LongTensor(sequences_pos),
-                                      self._use_cuda)
             probs_tensor = gpu(torch.from_numpy(probs),
                                self._use_cuda)
             user_tensor = gpu(torch.from_numpy(users),
@@ -153,31 +153,25 @@ class Recommender(object):
             for minibatch_num, \
                 (batch_sequence,
                  batch_probs,
-                 batch_sequence_pos,
                  batch_user,
                  batch_target,
                  batch_negative) in enumerate(minibatch(sequences_tensor,
                                                         probs_tensor,
-                                                        sequences_pos_tensor,
                                                         user_tensor,
                                                         item_target_tensor,
                                                         item_negative_tensor,
                                                         batch_size=self._batch_size)):
-
                 sequence_var = Variable(batch_sequence)
                 probs_var = Variable(batch_probs)
-                sequences_pos_var = Variable(batch_sequence_pos)
                 user_var = Variable(batch_user)
                 item_target_var = Variable(batch_target)
                 item_negative_var = Variable(batch_negative)
 
                 target_prediction = self._net(sequence_var,
-                                              sequences_pos_var,
                                               user_var,
                                               item_target_var,
                                               probs_var)
                 negative_prediction = self._net(sequence_var,
-                                                sequences_pos_var,
                                                 user_var,
                                                 item_negative_var,
                                                 probs_var,
@@ -185,11 +179,11 @@ class Recommender(object):
 
                 self._optimizer.zero_grad()
                 # compute the binary cross-entropy loss
-                positive_loss = -torch.mean(torch.log(F.sigmoid(target_prediction)))
-                negative_loss = -torch.mean(torch.log(1 - F.sigmoid(negative_prediction)))
+                positive_loss = -torch.mean(torch.log(torch.sigmoid(target_prediction) + 1e-8))
+                negative_loss = -torch.mean(torch.log(1 - torch.sigmoid(negative_prediction) + 1e-8))
                 loss = positive_loss + negative_loss
 
-                epoch_loss += loss.data[0]
+                epoch_loss += loss.item()
 
                 loss.backward()
                 self._optimizer.step()
@@ -197,7 +191,7 @@ class Recommender(object):
             epoch_loss /= minibatch_num + 1
 
             t2 = time()
-            if verbose and (epoch_num + 1) % 1 == 0:
+            if verbose and (epoch_num + 1) % 10 == 0:
                 precision, recall, mean_aps = evaluate_ranking(self, test, train, k=[1, 5, 10])
                 output_str = "Epoch %d [%.1f s]\tloss=%.4f, map=%.4f, " \
                              "prec@1=%.4f, prec@5=%.4f, prec@10=%.4f, " \
@@ -225,10 +219,8 @@ class Recommender(object):
         Sample negative from a candidate set of each user. The
         candidate set of each user is defined by:
         {All Items} \ {Items Rated by User}
-
         Parameters
         ----------
-
         users: array of np.int64
             sequence users
         interactions: :class:`spotlight.interactions.Interactions`
@@ -258,10 +250,8 @@ class Recommender(object):
         Make predictions for evaluation: given a user id, it will
         first retrieve the test sequence associated with that user
         and compute the recommendation scores for items.
-
         Parameters
         ----------
-
         user_id: int
            users id for which prediction scores needed.
         item_ids: array, optional
@@ -282,21 +272,17 @@ class Recommender(object):
         if item_ids is None:
             item_ids = np.arange(self._num_items).reshape(-1, 1)
 
-        L = self.test_sequence.L
         sequences = torch.from_numpy(sequence.astype(np.int64).reshape(1, -1))
         probs = torch.from_numpy(self.test_sequence.probs[user_id, :])
         item_ids = torch.from_numpy(item_ids.astype(np.int64))
         user_id = torch.from_numpy(np.array([[user_id]]).astype(np.int64))
-        pos_seq = torch.from_numpy(np.array([[i for i in range(L)]]).astype(np.int64))
 
         sequence_var = Variable(gpu(sequences, self._use_cuda))
         probs_var = Variable(gpu(probs, self._use_cuda))
         item_var = Variable(gpu(item_ids, self._use_cuda))
         user_var = Variable(gpu(user_id, self._use_cuda))
-        pos_var = Variable(gpu(pos_seq, self._use_cuda))
 
         out = self._net(sequence_var,
-                        pos_var,
                         user_var,
                         item_var,
                         probs_var,
@@ -315,11 +301,11 @@ if __name__ == '__main__':
     # train arguments
     parser.add_argument('--n_iter', type=int, default=50)
     parser.add_argument('--seed', type=int, default=1234)
-    parser.add_argument('--batch_size', type=int, default=512)
+    parser.add_argument('--batch_size', type=int, default=2048)
     parser.add_argument('--learning_rate', type=float, default=1e-3)
     parser.add_argument('--l2', type=float, default=1e-6)
     parser.add_argument('--neg_samples', type=int, default=3)
-    parser.add_argument('--use_cuda', type=str2bool, default=False)
+    parser.add_argument('--use_cuda', type=str2bool, default=True)
 
     config = parser.parse_args()
 
@@ -346,10 +332,10 @@ if __name__ == '__main__':
 
     test = Interactions(config.test_root,
                         user_map=train.user_map,
-                        item_map=train.item_map,
-                        istrain=False)
+                        item_map=train.item_map)
 
     matrix = dok_matrix((train.num_users, train.num_items))
+
     with open(config.train_root) as f:
         for line in f:
             line = line[:-1]
@@ -358,14 +344,11 @@ if __name__ == '__main__':
             user, item, _ = line.split()
             matrix[train.user_map[user], train.item_map[item] - 1] += 1
 
-    print('matrix fill done')
-
     topic_num = 30
-    lda = LatentDirichletAllocation(n_components=topic_num, learning_method='batch', n_jobs=4)
+    lda = LatentDirichletAllocation(n_components=topic_num, learning_method='batch',
+                                    n_jobs=4, max_iter=20, max_doc_update_iter=200, random_state=0)
     lda.fit(matrix)
-
-    print('lda done')
-
+    print('lda fit done')
     seq_num, seq_len = train.sequences.sequences.shape
     matrix = np.zeros((seq_num, seq_len, train.num_items), dtype=np.float32)
     i = np.arange(seq_num).reshape(-1, 1).repeat(seq_len, axis=1).reshape(-1)
@@ -387,6 +370,7 @@ if __name__ == '__main__':
     matrix = matrix.sum(axis=1)
     probs = lda.transform(matrix)
     train.test_sequences.probs = probs.astype(np.float32)
+    del matrix, i, j, k
 
     print(config)
     print(model_config)
@@ -397,6 +381,7 @@ if __name__ == '__main__':
                         l2=config.l2,
                         neg_samples=config.neg_samples,
                         model_args=model_config,
-                        use_cuda=config.use_cuda)
+                        use_cuda=config.use_cuda,
+                        topic_num=topic_num)
 
     model.fit(train, test, verbose=True)
