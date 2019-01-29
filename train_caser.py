@@ -169,7 +169,7 @@ class Recommender(object):
                 negative_loss = -torch.mean(torch.log(1 - F.sigmoid(negative_prediction)))
                 loss = positive_loss + negative_loss
 
-                epoch_loss += loss.data[0]
+                epoch_loss += loss.item()
 
                 loss.backward()
                 self._optimizer.step()
@@ -177,7 +177,7 @@ class Recommender(object):
             epoch_loss /= minibatch_num + 1
 
             t2 = time()
-            if verbose and (epoch_num + 1) % 1 == 0:
+            if verbose and (epoch_num + 1) % 10 == 0:
                 precision, recall, mean_aps = evaluate_ranking(self, test, train, k=[1, 5, 10])
                 output_str = "Epoch %d [%.1f s]\tloss=%.4f, map=%.4f, " \
                              "prec@1=%.4f, prec@5=%.4f, prec@10=%.4f, " \
@@ -278,11 +278,14 @@ class Recommender(object):
         return cpu(out.data).numpy().flatten()
 
 
+# d=100,nv=2,nh=16,drop=0.5,ac_conv=iden,ac_fc=sigm for Gowalla data
+# d=50, nv=4,nh=16,drop=0.5,ac_conv=relu,ac_fc=relu (default)
+
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     # data arguments
-    parser.add_argument('--train_root', type=str, default='datasets/ml1m/test/train.txt')
-    parser.add_argument('--test_root', type=str, default='datasets/ml1m/test/test.txt')
+    parser.add_argument('--train_root', type=str, default='datasets/gowalla/test/train.txt')
+    parser.add_argument('--test_root', type=str, default='datasets/gowalla/test/test.txt')
     parser.add_argument('--L', type=int, default=5)
     parser.add_argument('--T', type=int, default=3)
     # train arguments
@@ -292,7 +295,7 @@ if __name__ == '__main__':
     parser.add_argument('--learning_rate', type=float, default=1e-3)
     parser.add_argument('--l2', type=float, default=1e-6)
     parser.add_argument('--neg_samples', type=int, default=3)
-    parser.add_argument('--use_cuda', type=str2bool, default=False)
+    parser.add_argument('--use_cuda', type=str2bool, default=True)
 
     config = parser.parse_args()
 
@@ -302,8 +305,8 @@ if __name__ == '__main__':
     model_parser.add_argument('--nv', type=int, default=4)
     model_parser.add_argument('--nh', type=int, default=16)
     model_parser.add_argument('--drop', type=float, default=0.5)
-    model_parser.add_argument('--ac_conv', type=str, default='relu')
-    model_parser.add_argument('--ac_fc', type=str, default='relu')
+    model_parser.add_argument('--ac_conv', type=str, default='iden')
+    model_parser.add_argument('--ac_fc', type=str, default='sigm')
 
     model_config = model_parser.parse_args()
     model_config.L = config.L
