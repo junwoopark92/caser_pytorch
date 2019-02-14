@@ -177,7 +177,7 @@ class Recommender(object):
             epoch_loss /= minibatch_num + 1
 
             t2 = time()
-            if verbose and (epoch_num + 1) % 10 == 0:
+            if verbose and (epoch_num + 1) % 25 == 0:
                 precision, recall, mean_aps = evaluate_ranking(self, test, train, k=[1, 5, 10])
                 output_str = "Epoch %d [%.1f s]\tloss=%.4f, map=%.4f, " \
                              "prec@1=%.4f, prec@5=%.4f, prec@10=%.4f, " \
@@ -279,6 +279,7 @@ class Recommender(object):
 
 
 # d=100,nv=2,nh=16,drop=0.5,ac_conv=iden,ac_fc=sigm for Gowalla data
+# d=50,nv=4,nh=16,drop=0.5,ac_conv=relu,ac_fc=relu for MovieLens data
 # d=50, nv=4,nh=16,drop=0.5,ac_conv=relu,ac_fc=relu (default)
 
 if __name__ == '__main__':
@@ -286,7 +287,7 @@ if __name__ == '__main__':
     # data arguments
     parser.add_argument('--train_root', type=str, default='datasets/gowalla/test/train.txt')
     parser.add_argument('--test_root', type=str, default='datasets/gowalla/test/test.txt')
-    parser.add_argument('--L', type=int, default=5)
+    parser.add_argument('--L', type=int, default=1)
     parser.add_argument('--T', type=int, default=3)
     # train arguments
     parser.add_argument('--n_iter', type=int, default=50)
@@ -295,14 +296,14 @@ if __name__ == '__main__':
     parser.add_argument('--learning_rate', type=float, default=1e-3)
     parser.add_argument('--l2', type=float, default=1e-6)
     parser.add_argument('--neg_samples', type=int, default=3)
-    parser.add_argument('--use_cuda', type=str2bool, default=True)
+    parser.add_argument('--use_cuda', type=str2bool, default=False)
 
     config = parser.parse_args()
 
     # model dependent arguments
     model_parser = argparse.ArgumentParser()
-    model_parser.add_argument('--d', type=int, default=50)
-    model_parser.add_argument('--nv', type=int, default=4)
+    model_parser.add_argument('--d', type=int, default=100)
+    model_parser.add_argument('--nv', type=int, default=2)
     model_parser.add_argument('--nh', type=int, default=16)
     model_parser.add_argument('--drop', type=float, default=0.5)
     model_parser.add_argument('--ac_conv', type=str, default='iden')
