@@ -200,6 +200,8 @@ class Recommender(object):
                                                                         time() - t2)
                 print(output_str)
 
+        return output_str, mean_aps
+
     def _generate_negative_samples(self, users, interactions, n):
         """
         Sample negative from a candidate set of each user. The
